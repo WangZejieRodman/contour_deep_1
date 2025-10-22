@@ -1,5 +1,5 @@
 """
-Day 8: 启动首次完整训练（2 epochs，快速版）
+Day 8: 启动首次完整训练（20 epochs，快速版）
 用法: 在PyCharm中直接运行此脚本
 """
 
@@ -76,7 +76,7 @@ def check_prerequisites():
 def start_training():
     """启动训练"""
     print("\n" + "=" * 60)
-    print("启动训练（2 epochs）...")
+    print("启动训练（20 epochs）...")
     print("=" * 60)
 
     # 导入训练脚本
@@ -123,7 +123,7 @@ def start_training():
 def main():
     """主函数"""
     print("\n" + "=" * 60)
-    print("Day 8: 首次完整训练（2 epochs，快速版）")
+    print("Day 8: 首次完整训练（20 epochs，快速版）")
     print("=" * 60)
     print("预计耗时: 约4小时")
     print("=" * 60)
