@@ -1,0 +1,524 @@
+Contour Deep 项目方案
+项目目标
+基于BEV多层表示的深度学习点云场景识别，实现方向1(检索特征网络)和方向2(BCI匹配网络)的组合方案。
+
+一、项目结构设计
+contour_deep/
+├── configs/
+│   ├── config_base.yaml           # 基础配置（层数、分辨率等）
+│   ├── config_retrieval.yaml      # 方向1网络配置
+│   └── config_bci_matching.yaml   # 方向2网络配置
+│
+├── data/
+│   ├── __init__.py
+│   ├── bev_generator.py           # 从原始点云生成多层BEV
+│   ├── dataset_retrieval.py       # 方向1的数据集类
+│   ├── dataset_bci.py             # 方向2的数据集类
+│   └── data_utils.py              # 通用工具（归一化、增强等）
+│
+├── models/
+│   ├── __init__.py
+│   ├── retrieval_net.py           # 方向1：检索特征提取网络
+│   ├── bci_matching_net.py        # 方向2：BCI匹配网络
+│   └── modules/
+│       ├── multiscale_conv.py     # 多尺度卷积模块
+│       ├── attention.py           # 注意力模块
+│       └── gnn.py                 # 图神经网络模块
+│
+├── training/
+│   ├── __init__.py
+│   ├── train_retrieval.py         # 方向1训练脚本
+│   ├── train_bci.py               # 方向2训练脚本
+│   ├── losses.py                  # 损失函数（对比学习等）
+│   └── trainer.py                 # 通用训练器基类
+│
+├── evaluation/
+│   ├── __init__.py
+│   ├── eval_retrieval.py          # 方向1评估（Recall@N）
+│   ├── eval_bci.py                # 方向2评估（匹配准确率）
+│   └── eval_pipeline.py           # 完整流程评估
+│
+├── utils/
+│   ├── __init__.py
+│   ├── contour_utils.py           # 移植：轮廓提取相关
+│   ├── bci_utils.py               # 移植：BCI生成相关
+│   └── visualization.py           # 可视化工具
+│
+├── scripts/
+│   ├── preprocess_bev.py          # 预处理：批量生成BEV
+│   ├── generate_bci_labels.py     # 生成方向2的训练标签
+│   └── test_pipeline.py           # 端到端测试脚本
+│
+├── checkpoints/                   # 保存模型权重
+├── logs/                          # 训练日志
+├── results/                       # 评估结果
+└── requirements.txt
+
+二、实施步骤（4周计划）绿色是创新点，蓝色是能继续创新的点
+# Contour Deep 实施步骤（4周计划）- 更新版
+
+基于Day 1完成情况更新。
+
+---
+
+## Week 1: 数据准备与方向1基础实现
+
+### ✅ **Day 1: 环境搭建与代码移植**（已完成）
+- 创建项目目录结构
+- 移植核心模块：`contour_types.py`, `contour_view.py`
+- 实现 `data/bev_generator.py`（原始点云 → 多层BEV）
+- 实现 `utils/contour_utils.py`（BEV → 轮廓提取）
+- 实现 `utils/bci_utils.py`（轮廓 → BCI图数据）
+- 实现 `data/data_utils.py`（数据加载、归一化、增强）
+- 编写 `config_base.yaml`
+- 所有模块测试通过
+
+---
+
+### **Day 2: BEV预处理与缓存**（预计6-8小时）
+
+#### **任务2.1: 实现批量预处理脚本**
+- 实现 `scripts/preprocess_bev.py`
+  - 读取训练集pickle（14030个点云）
+  - 批量生成BEV+VCD+轮廓（保存为`.npz`）
+  - 进度条显示（tqdm）
+  - 多进程加速（可选）
+- 生成训练集BEV缓存：`/path/to/bev_cache/train/`
+- 生成测试集BEV缓存：`/path/to/bev_cache/test/`（5310个点云）
+
+**预期输出**：
+```
+train/
+  ├── 000000.npz  # {bev_layers, vcd, contours}
+  ├── 000001.npz
+  └── ...
+test/
+  ├── 000000.npz
+  └── ...
+```
+
+**验证标准**：
+- 缓存文件数量 = 14030（训练） + 5310（测试）
+- 随机抽取10个文件加载验证格式正确
+- 计算缓存占用空间（预计10-15GB）
+
+---
+
+#### **任务2.2: 缓存数据统计分析**
+- 统计所有BEV的：
+  - 每层平均占用像素数
+  - VCD分布直方图
+  - 轮廓数量分布
+- 生成数据集统计报告（保存为`dataset_stats.json`）
+- 可视化：随机选5个BEV绘制8层热力图
+
+**用途**：了解数据分布，为网络设计提供参考。
+
+---
+
+### **Day 3: 方向1数据集实现**（预计4-6小时）
+
+#### **任务3.1: 实现RetrievalDataset类**
+- 实现 `data/dataset_retrieval.py`
+  - 继承 `torch.utils.data.Dataset`
+  - `__init__()`: 加载pickle，构建索引
+  - `__getitem__()`: 返回（anchor, positive, negatives）三元组
+    - 从缓存加载BEV+VCD
+    - 归一化到[0,1]
+    - 堆叠为[9, 200, 200]张量
+  - 正负样本采样策略：
+    - 随机选1个正样本
+    - 随机选10个负样本（可配置）
+  - 可选数据增强（旋转±5°、平移±1m）
+
+**关键点**：
+- 使用内存映射加速加载（`np.load(..., mmap_mode='r')`）
+- 缓存最近N个BEV在内存（LRU cache）
+
+---
+
+#### **任务3.2: 实现DataLoader与调试**
+- 创建训练/验证DataLoader
+  - batch_size=8
+  - num_workers=4
+  - shuffle=True
+- 测试加载速度（目标：>50 samples/sec）
+- 可视化：随机batch的anchor/positive/negative
+- 验证数据增强效果
+
+---
+
+### **Day 4: 方向1网络架构-基础层**（预计6-8小时）
+
+#### **任务4.1: 实现多尺度卷积模块**
+- 实现 `models/modules/multiscale_conv.py`
+  - 三分支：Conv 3×3, 7×7, 15×15
+  - 每分支：Conv → BN → ReLU → [64通道]
+  - 拼接后：Conv 1×1 → [128通道]
+- 单元测试：输入[B,9,200,200] → 输出[B,128,200,200]
+
+---
+
+#### **任务4.2: 实现注意力模块**
+- 实现 `models/modules/attention.py`
+  - `SpatialAttention`: 空间注意力（突出重要区域）
+  - `CrossLayerAttention`: 跨层注意力（学习8层的权重）
+- 单元测试：验证输出维度和权重和为1
+
+---
+
+### **Day 5-6: 方向1网络架构-完整网络**（预计10-12小时）
+
+#### **任务5.1: 实现RetrievalNet主干网络**
+- 实现 `models/retrieval_net.py`
+  - 输入：[B, 9, 200, 200]
+  - 流程：
+    ```
+    Input → MultiScaleConv → SpatialAttention
+          → ResBlock × 3 (下采样: 200→100→50→25)
+          → CrossLayerAttention (加权融合8层+VCD)
+          → GlobalPooling (GAP + GMP)
+          → FC(512→256→128)
+    ```
+  - 输出：[B, 128] 全局特征向量
+- 参数量统计（目标：<10M）
+
+---
+
+#### **任务5.2: 网络测试与调试**
+- 前向传播测试（随机输入）
+- 梯度检查（backward无nan）
+- 可视化中间层输出（注意力图、特征图）
+- 推理速度测试（目标：>30 FPS on GPU）
+
+---
+
+### **Day 7: 训练框架搭建**（预计4-6小时）
+
+#### **任务7.1: 实现损失函数**
+- 实现 `training/losses.py`
+  - Triplet Loss with Hard Mining
+  - 或 InfoNCE Loss（对比学习）
+  - 可选：结合Center Loss
+
+---
+
+#### **任务7.2: 实现训练器基类**
+- 实现 `training/trainer.py`
+  - 训练循环框架
+  - 验证集评估（每N个epoch）
+  - Checkpoint保存与恢复
+  - TensorBoard日志
+  - 学习率调度（Warmup + CosineAnnealing）
+
+---
+
+#### **任务7.3: 实现方向1训练脚本**
+- 实现 `training/train_retrieval.py`
+  - 加载数据集
+  - 初始化模型、优化器
+  - 训练循环（先跑1个epoch验证流程）
+  - 命令行参数解析
+
+**Day 7完成标志**：能跑通1个完整epoch（不管性能）
+
+---
+
+## Week 2: 方向1训练与优化
+
+### **Day 8-10: 方向1首次训练**（预计20-24小时）
+
+#### **训练配置**
+- Epochs: 50
+- Batch size: 8
+- Learning rate: 1e-4 (Warmup 5 epochs)
+- Optimizer: AdamW (weight_decay=1e-4)
+- Loss: Triplet Loss (margin=0.5)
+
+#### **监控指标**
+- 训练损失曲线
+- 验证集Recall@1, @5, @10（每5 epochs）
+- 特征分布t-SNE可视化
+- 困难样本分析（hard triplets占比）
+
+#### **预期结果**
+- 训练收敛（loss下降到稳定值）
+- Recall@1 > 50%（首次训练baseline）
+
+---
+
+### **Day 11: 方向1评估**（预计4-6小时）
+
+#### **任务11.1: 实现评估脚本**
+- 实现 `evaluation/eval_retrieval.py`
+  - 提取所有数据库特征（14030个）
+  - 提取所有查询特征（5310个）
+  - 构建KNN索引（Faiss）
+  - 计算Recall@1/5/10/25
+  - 可视化：成功/失败案例对比
+
+#### **任务11.2: 对比baseline**
+- Baseline（原始Contour Context）：73.14% Recall@1
+- 当前方法：？？% Recall@1
+- 分析差距原因
+
+---
+
+### **Day 12-13: 方向1优化**（预计12-16小时）
+
+#### **优化方向**
+1. **超参数调优**
+   - 学习率：1e-4 → 5e-5
+   - Batch size：8 → 16
+   - Margin：0.5 → 0.3
+2. **损失函数**
+   - Triplet → InfoNCE
+   - 添加Center Loss
+3. **网络结构**
+   - 增加ResBlock深度
+   - 调整特征维度（128 → 256）
+4. **数据增强**
+   - 增强概率：0.5 → 0.7
+   - 添加高度抖动
+
+#### **消融实验**（可选）
+- 移除空间注意力 → 看性能下降
+- 移除跨层注意力 → 看性能下降
+- 单尺度 vs 多尺度卷积
+
+**目标**：Recall@1 > 78%（超过baseline）
+
+---
+
+### **Day 14: 准备方向2数据**（预计6-8小时）
+
+#### **任务14.1: 生成BCI配对标签**
+- 实现 `scripts/generate_bci_labels.py`
+  - 读取轮廓缓存
+  - 为每个anchor生成BCI
+  - 为每个positive生成BCI
+  - 为每个negative生成BCI（采样策略：随机选10个）
+  - 构建配对标签：
+    ```python
+    {
+      'anchor_bci': BCI对象,
+      'positive_bcis': [BCI1, BCI2, ...],
+      'negative_bcis': [BCI1, BCI2, ...],
+      'label': [1, 1, ..., 0, 0, ...]
+    }
+    ```
+  - 保存为：`bci_pairs_train.pkl`, `bci_pairs_test.pkl`
+
+#### **任务14.2: BCI数据分析**
+- 统计BCI复杂度：
+  - 平均邻居数分布
+  - 平均图节点数分布
+  - 图密度分布
+- 可视化：BCI图结构示例（用networkx）
+
+---
+
+## Week 3: 方向2实现与训练
+
+### **Day 15: 方向2数据集实现**（预计6-8小时）
+
+#### **任务15.1: 实现BCIDataset类**
+- 实现 `data/dataset_bci.py`
+  - 加载BCI配对标签
+  - `__getitem__()`: 返回两个BCI的图数据
+    - 转换为PyTorch Geometric的`Data`格式
+    - 节点特征[N, 27]
+    - 边索引[2, E]
+    - 边权重[E]
+    - 标签（0/1）
+  - 正负样本平衡（1:2采样）
+
+#### **任务15.2: 图数据批处理**
+- 实现自定义collate函数（处理变长图）
+- 测试DataLoader（batch_size=32）
+
+---
+
+### **Day 16-17: 方向2网络实现**（预计10-12小时）
+
+#### **任务16.1: 实现GNN模块**
+- 实现 `models/modules/gnn.py`
+  - 基于PyTorch Geometric的GAT（图注意力网络）
+  - 3层GAT：27 → 64 → 128 → 128
+  - 全局池化：MeanPooling + MaxPooling
+  - 输出：[128]图嵌入
+
+---
+
+#### **任务16.2: 实现BCI匹配网络**
+- 实现 `models/bci_matching_net.py`
+  - 输入：两个BCI图
+  - 流程：
+    ```
+    BCI_src → GNN → embed_src [128]
+    BCI_tgt → GNN → embed_tgt [128]
+    
+    Concat(embed_src, embed_tgt, |diff|, product)
+          → MLP(512→256→128→1)
+          → Sigmoid
+    ```
+  - 输出：匹配置信度[0, 1]
+- 参数量统计
+
+---
+
+### **Day 18-20: 方向2训练**（预计20-24小时）
+
+#### **训练配置**
+- Epochs: 50
+- Batch size: 32
+- Learning rate: 1e-3（GNN通常需要较大lr）
+- Optimizer: Adam
+- Loss: Binary Cross Entropy
+- 正负比例：1:2
+
+#### **监控指标**
+- 训练/验证准确率
+- AUC-ROC曲线
+- 混淆矩阵（TP/FP/TN/FN）
+- 注意力权重可视化
+
+**目标**：验证集准确率 > 85%
+
+---
+
+### **Day 21: 方向2评估**（预计4-6小时）
+
+#### **任务21.1: 单独评估方向2性能**
+- 给定真实的Top-30候选（来自方向1）
+- 用方向2重新排序
+- 计算Recall@1提升
+- 失败案例分析
+
+#### **任务21.2: 可视化分析**
+- 注意力权重热力图（哪些邻居重要？）
+- BCI图结构对比（匹配 vs 不匹配）
+- 混淆案例分析
+
+---
+
+## Week 4: 联合评估与优化
+
+### **Day 22-23: 端到端流程实现**（预计10-12小时）
+
+#### **任务22.1: 实现完整推理流程**
+- 实现 `evaluation/eval_pipeline.py`
+  ```python
+  # 完整流程
+  query_pointcloud
+    → BEV生成
+    → 方向1: 提取特征 → KNN搜索 → Top-30候选
+    → 方向2: BCI匹配 → 重新排序 → Top-1结果
+  ```
+
+#### **任务22.2: 对比实验**
+- Baseline（Contour Context）：73.14% Recall@1
+- 仅方向1：？？% Recall@1
+- 方向1+方向2：？？% Recall@1
+- 统计显著性检验（McNemar's test）
+
+**目标**：方向1+2组合 > 83% Recall@1
+
+---
+
+### **Day 24-25: 联合优化（可选）**（预计12-16小时）
+
+#### **方案A: 顺序微调**
+- 固定方向1，fine-tune方向2
+- 使用方向1提供的真实Top-30重新训练方向2
+
+#### **方案B: 端到端联合训练**
+- 梯度从方向2回传到方向1
+- 联合优化两个网络
+- 需要仔细调整学习率
+
+#### **超参数优化**
+- KNN的K值：30 → 50？
+- 方向2的阈值：0.5 → ？
+- 特征维度：128 → 256？
+
+---
+
+### **Day 26-27: 消融实验与论文准备**（预计12-16小时）
+
+#### **消融实验**
+1. **方向1各模块贡献**
+   - 多尺度卷积：移除 → Recall下降？%
+   - 空间注意力：移除 → Recall下降？%
+   - 跨层注意力：移除 → Recall下降？%
+2. **方向2的必要性**
+   - 仅Top-1 vs 重排序后Top-1
+3. **层数影响**
+   - 8层 vs 15层配置
+4. **分辨率影响**
+   - 0.1m vs 0.2m vs 0.4m
+
+#### **论文图表准备**
+- 性能对比表格（vs baseline）
+- Recall曲线图（@1/5/10/25）
+- 注意力可视化热力图
+- BCI图匹配示例
+- t-SNE特征空间分布
+- 失败案例分析
+
+---
+
+### **Day 28: 代码整理与文档**（预计6-8小时）
+
+#### **代码整理**
+- 统一代码风格（Black格式化）
+- 完善所有函数注释
+- 删除冗余代码和注释
+- 类型标注补全
+
+#### **文档编写**
+- README完善：
+  - 环境配置指南
+  - 数据准备步骤
+  - 训练命令示例
+  - 评估命令示例
+  - 预训练权重链接
+- 实验报告：
+  - 方法描述
+  - 实验设置
+  - 结果表格
+  - 消融实验
+
+#### **可选：Demo演示**
+- Web界面：上传点云 → 显示检索结果
+- 或命令行工具：快速测试单个点云
+
+---
+
+## 关键里程碑
+
+| 时间 | 里程碑 | 验收标准 |
+|------|--------|---------|
+| Day 1 | 基础框架搭建 | 所有模块测试通过 |
+| Day 7 | 方向1可训练 | 跑通1个epoch |
+| Day 10 | 方向1首次训练完成 | Recall@1 > 50% |
+| Day 14 | 方向2数据准备完成 | BCI标签生成完成 |
+| Day 20 | 方向2训练完成 | 验证准确率 > 85% |
+| Day 23 | 端到端流程完成 | Recall@1 > 83% |
+| Day 28 | 项目交付 | 代码+文档+实验报告 |
+
+---
+
+## 风险预警
+
+| 风险 | 概率 | 应对 |
+|------|------|------|
+| 方向1性能不达标 | 中 | Day 12-13预留2天优化 |
+| BEV缓存占用过大 | 低 | 使用压缩格式或按需加载 |
+| 方向2训练不稳定 | 中 | 调整学习率、batch size |
+| 推理速度过慢 | 低 | 模型剪枝或TensorRT加速 |
+| 显存不足 | 中 | 减小batch size或梯度累积 |
+
+
+
+
