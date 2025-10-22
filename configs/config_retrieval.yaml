@@ -30,7 +30,7 @@ loss:
 
 # 训练配置
 training:
-  num_epochs: 2  # 缩短到20 epochs（从50→20）
+  num_epochs: 20  # 缩短到20 epochs（从50→20）
   batch_size: 4
   num_workers: 4
   save_freq: 5
